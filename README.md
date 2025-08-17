@@ -52,6 +52,9 @@ Navigate any codebase through time, understanding evolution of features and arch
    # Required: Your Anthropic Claude API key
    ANTHROPIC_API_KEY=your_anthropic_api_key_here
    
+   # Optional: GitHub token for higher rate limits (recommended for production)
+   GITHUB_TOKEN=your_github_personal_access_token
+   
    # Optional: Database configuration
    DATABASE_URL=./codebase_time_machine.db
    UPLOAD_DIR=./uploads
@@ -160,9 +163,12 @@ npm run lint
 
 This application is designed to be deployed on Vercel:
 
-1. **Environment Variables**: Set your `ANTHROPIC_API_KEY` in Vercel's environment settings
+1. **Environment Variables**: Set these in Vercel's environment settings:
+   - `ANTHROPIC_API_KEY` (required)
+   - `GITHUB_TOKEN` (optional, for higher GitHub API rate limits)
 2. **Database**: SQLite files will be stored in `/tmp` on Vercel (ephemeral)
 3. **File Uploads**: Handled in `/tmp` directory
+4. **Repository Fetching**: Uses GitHub API instead of git clone in serverless environments
 
 For persistent storage in production, consider:
 - PostgreSQL for database

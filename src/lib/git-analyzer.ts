@@ -34,12 +34,22 @@ export class GitAnalyzer {
     // Check if it's a valid git repository
     const isRepo = await this.git.checkIsRepo();
     if (!isRepo) {
-      throw new Error('Not a valid git repository');
+      console.log('Not a git repository, treating as API-fetched repository');
     }
 
-    // Get basic repository info
-    const log = await this.git.log(['--all', '--oneline']);
-    const authors = await this.getUniqueAuthors();
+    let log: LogResult;
+    let authors: string[];
+    
+    try {
+      // Get basic repository info
+      log = await this.git.log(['--all', '--oneline']);
+      authors = await this.getUniqueAuthors();
+    } catch (error) {
+      console.log('No git history available, using fallback data');
+      log = { all: [], latest: null as any, total: 0 };
+      authors = ['Unknown'];
+    }
+    
     const languages = await this.detectLanguages();
     
     // Analyze codebase content
@@ -67,8 +77,8 @@ export class GitAnalyzer {
       languages,
       codebase,
       dateRange: {
-        first: firstCommit?.date || '',
-        last: lastCommit?.date || ''
+        first: firstCommit?.date || new Date().toISOString(),
+        last: lastCommit?.date || new Date().toISOString()
       }
     };
 

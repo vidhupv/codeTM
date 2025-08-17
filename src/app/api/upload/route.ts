@@ -4,11 +4,102 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { z } from 'zod';
 import { spawn } from 'child_process';
+import { Octokit } from 'octokit';
 
 const uploadSchema = z.object({
   repoName: z.string().min(1),
   repoUrl: z.string().url().optional(),
 });
+
+// Helper function to check if we're in a serverless environment
+function isServerlessEnvironment(): boolean {
+  return process.env.VERCEL === '1' || process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined;
+}
+
+// Helper function to parse GitHub URL
+function parseGitHubUrl(url: string): { owner: string; repo: string } | null {
+  const match = url.match(/github\.com\/([^/]+)\/([^/]+)(?:\/|\.git|$)/);
+  if (!match) return null;
+  return { owner: match[1], repo: match[2].replace('.git', '') };
+}
+
+// Helper function to fetch repository using GitHub API (serverless-friendly)
+async function fetchRepositoryViaAPI(repoUrl: string, extractDir: string): Promise<void> {
+  const parsed = parseGitHubUrl(repoUrl);
+  if (!parsed) {
+    throw new Error('Invalid GitHub URL format');
+  }
+
+  const octokit = new Octokit({
+    auth: process.env.GITHUB_TOKEN || undefined, // Optional token for higher rate limits
+  });
+
+  // Create directory structure
+  await fs.mkdir(extractDir, { recursive: true });
+
+  try {
+    // Get repository information and default branch
+    const { data: repoInfo } = await octokit.rest.repos.get({
+      owner: parsed.owner,
+      repo: parsed.repo,
+    });
+
+    // Get the repository tree (all files)
+    const { data: tree } = await octokit.rest.git.getTree({
+      owner: parsed.owner,
+      repo: parsed.repo,
+      tree_sha: repoInfo.default_branch,
+      recursive: 'true',
+    });
+
+    // Download each file
+    for (const item of tree.tree) {
+      if (item.type === 'blob' && item.path && item.sha) {
+        try {
+          const { data: blob } = await octokit.rest.git.getBlob({
+            owner: parsed.owner,
+            repo: parsed.repo,
+            file_sha: item.sha,
+          });
+
+          const filePath = path.join(extractDir, item.path);
+          const fileDir = path.dirname(filePath);
+          
+          // Create directory if needed
+          await fs.mkdir(fileDir, { recursive: true });
+          
+          // Write file content
+          const content = blob.encoding === 'base64' 
+            ? Buffer.from(blob.content, 'base64')
+            : blob.content;
+          
+          await fs.writeFile(filePath, content);
+        } catch (fileError) {
+          console.log(`Skipping file ${item.path}: ${fileError}`);
+          // Continue with other files
+        }
+      }
+    }
+
+    // Create a minimal git repository structure for the analyzer
+    const gitDir = path.join(extractDir, '.git');
+    await fs.mkdir(gitDir, { recursive: true });
+    
+    // Create basic git config to make it look like a git repo
+    await fs.writeFile(path.join(gitDir, 'config'), `[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+[remote "origin"]
+	url = ${repoUrl}
+	fetch = +refs/heads/*:refs/remotes/origin/*
+`);
+    
+  } catch (error) {
+    throw new Error(`Failed to fetch repository via GitHub API: ${error}`);
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -33,32 +124,38 @@ export async function POST(request: NextRequest) {
       }
 
       if (cloneFromGitHub && repoUrl) {
-        // Actually clone the repository
+        // Clone repository using appropriate method
         const timestamp = Date.now();
         const uploadsDir = path.join(process.cwd(), 'uploads');
         await fs.mkdir(uploadsDir, { recursive: true });
         const extractDir = path.join(uploadsDir, `${repoName}_${timestamp}`);
 
         try {
-          // Use git clone command
-          
-          await new Promise((resolve, reject) => {
-            const gitClone = spawn('git', ['clone', repoUrl, extractDir], {
-              stdio: 'inherit'
+          if (isServerlessEnvironment()) {
+            // Use GitHub API for serverless environments
+            console.log('Using GitHub API for serverless environment');
+            await fetchRepositoryViaAPI(repoUrl, extractDir);
+          } else {
+            // Use git clone for local development
+            console.log('Using git clone for local development');
+            await new Promise((resolve, reject) => {
+              const gitClone = spawn('git', ['clone', repoUrl, extractDir], {
+                stdio: 'inherit'
+              });
+              
+              gitClone.on('close', (code) => {
+                if (code === 0) {
+                  resolve(true);
+                } else {
+                  reject(new Error(`Git clone failed with code ${code}`));
+                }
+              });
+              
+              gitClone.on('error', (error) => {
+                reject(error);
+              });
             });
-            
-            gitClone.on('close', (code) => {
-              if (code === 0) {
-                resolve(true);
-              } else {
-                reject(new Error(`Git clone failed with code ${code}`));
-              }
-            });
-            
-            gitClone.on('error', (error) => {
-              reject(error);
-            });
-          });
+          }
 
           // Initialize git analyzer with the cloned repository
           const analyzer = new GitAnalyzer(extractDir);
@@ -82,9 +179,13 @@ export async function POST(request: NextRequest) {
             }
           });
         } catch (error) {
-          console.error('Git clone failed:', error);
+          console.error('Repository fetch failed:', error);
           return NextResponse.json(
-            { error: 'Failed to clone repository. Make sure the URL is correct and the repository is public.' },
+            { 
+              error: 'Failed to fetch repository. Make sure the URL is correct and the repository is public.',
+              details: error instanceof Error ? error.message : 'Unknown error',
+              method: isServerlessEnvironment() ? 'GitHub API' : 'git clone'
+            },
             { status: 500 }
           );
         }
