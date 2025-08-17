@@ -3,6 +3,7 @@ import { GitAnalyzer } from '@/lib/git-analyzer';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { z } from 'zod';
+import { spawn } from 'child_process';
 
 const uploadSchema = z.object({
   repoName: z.string().min(1),
@@ -40,7 +41,6 @@ export async function POST(request: NextRequest) {
 
         try {
           // Use git clone command
-          const { spawn } = require('child_process');
           
           await new Promise((resolve, reject) => {
             const gitClone = spawn('git', ['clone', repoUrl, extractDir], {

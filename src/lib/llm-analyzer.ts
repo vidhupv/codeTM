@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { db } from './database';
+import { promises as fs } from 'fs';
+import path from 'path';
 
 export interface EvolutionQuery {
   question: string;
@@ -229,8 +231,6 @@ export class LLMAnalyzer {
   }
 
   private async getCodebaseContent(repoPath: string): Promise<{ [filePath: string]: string }> {
-    const { promises: fs } = require('fs');
-    const path = require('path');
     const fileContents: { [filePath: string]: string } = {};
     
     try {
